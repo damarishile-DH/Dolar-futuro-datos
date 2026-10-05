@@ -45,38 +45,54 @@ def listar():
     return todas
 
 
-def buscar_series(lista):
-    def f(*opciones):
-        for res in opciones:
-            for v in lista:
-                if all(re.search(r, v.get("descripcion", ""), re.I) for r in res):
-                    return v
-        return None
-
-    def usd():
+def buscar(lista, *opciones):
+    for res in opciones:
         for v in lista:
-            d = v.get("descripcion", "")
-            if (re.search("tasa", d, re.I) and re.search("(dep[oó]sitos|plazo fijo)", d, re.I)
-                    and re.search(r"(d[oó]lares|u\$s)", d, re.I) and not re.search(r"pr[eé]stamo", d, re.I)):
+            if all(re.search(r, v.get("descripcion", ""), re.I) for r in res):
                 return v
-        return None
+    return None
 
-    return {
-        "a3500": f(["3500", "referencia"], ["3500"]),
-        "minorista_vendedor": f(["9791", "vendedor"], ["minorista", "vendedor"]),
-        "badlar_tna": f(["badlar", "privados", r"n\.a\."], ["badlar", r"n\.a\."], ["badlar", "nominal"]),
-        "badlar_tea": f(["badlar", "privados", r"e\.a\."], ["badlar", r"e\.a\."], ["badlar", "efectiva"]),
-        "usd": usd(),
-    }
+
+def ultimo_valor(idv):
+    s = serie(idv, str(HOY - timedelta(days=20)), str(HOY))
+    return s[-1][1] if s else None
+
+
+def elegir_badlar(lista):
+    cand = [v for v in lista if re.search(r"badlar de bancos privados", v.get("descripcion", ""), re.I)]
+    pesos, usd = [], []
+    for v in cand:
+        try:
+            x = ultimo_valor(v["idVariable"])
+        except Exception as e:
+            print(f"  BADLAR {v['idVariable']}: no pude leerla ({e})", file=sys.stderr)
+            continue
+        print(f"  BADLAR candidata {v['idVariable']}: último valor {x}")
+        if x is None:
+            continue
+        (pesos if x >= 5 else usd).append((x, v))
+    pesos.sort(key=lambda t: t[0])
+    usd.sort(key=lambda t: t[0])
+    tna = tea = u = None
+    if len(pesos) >= 2:
+        ids = {v["idVariable"]: (x, v) for x, v in pesos}
+        if 7 in ids and 35 in ids:
+            a, b = ids[7], ids[35]
+        else:
+            a, b = pesos[0], pesos[-1]
+        if a[0] > b[0]:
+            a, b = b, a
+        tna, tea = a[1], b[1]
+    if usd:
+        u = usd[0][1]
+    return tna, tea, u
 
 
 def diagnostico(lista):
     print(f"Total de series que devolvió el BCRA: {len(lista)}", file=sys.stderr)
-    for v in lista[:5]:
-        print("  ejemplo:", v.get("idVariable"), v.get("descripcion"), file=sys.stderr)
     n = 0
     for v in lista:
-        if re.search(r"3500|badlar|cambio", v.get("descripcion", ""), re.I):
+        if re.search(r"badlar|cambio|d[oó]lar", v.get("descripcion", ""), re.I):
             print("  candidata:", v.get("idVariable"), v.get("descripcion"), file=sys.stderr)
             n += 1
             if n >= 40:
@@ -135,7 +151,14 @@ def main():
     hasta = str(HOY)
 
     lista = listar()
-    S = buscar_series(lista)
+    tna, tea, usd = elegir_badlar(lista)
+    S = {
+        "a3500": buscar(lista, ["mayorista", "referencia"], ["3500"]),
+        "minorista_vendedor": buscar(lista, ["minorista", "vendedor"]),
+        "badlar_tna": tna,
+        "badlar_tea": tea,
+        "usd": usd,
+    }
     faltan = [k for k in ("a3500", "badlar_tea") if not S[k]]
     if faltan:
         diagnostico(lista)
@@ -149,8 +172,7 @@ def main():
         try:
             for fecha, valor in serie(v["idVariable"], desde, hasta):
                 if clave == "usd":
-                    if not re.search(r"e\.a\.", v["descripcion"], re.I):
-                        valor = ((1 + valor / 100 * 30 / 365) ** (365 / 30) - 1) * 100
+                    valor = ((1 + valor / 100 * 30 / 365) ** (365 / 30) - 1) * 100
                     clave_ = "usd_tea"
                 else:
                     clave_ = clave
