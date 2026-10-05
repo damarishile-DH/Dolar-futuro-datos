@@ -30,30 +30,57 @@ def serie(idv, desde, hasta):
     return filas(json.loads(http(f"{BCRA}/{idv}?desde={desde}&hasta={hasta}&limit=3000")))
 
 
-def buscar_series():
-    lista = json.loads(http(f"{BCRA}?limit=1000")).get("results", [])
+def listar():
+    todas, offset = [], 0
+    while offset < 5000:
+        j = json.loads(http(f"{BCRA}?limit=1000&offset={offset}"))
+        res = j.get("results", [])
+        if not res:
+            break
+        todas += res
+        total = ((j.get("metadata") or {}).get("resultset") or {}).get("count", 0)
+        offset += len(res)
+        if offset >= total:
+            break
+    return todas
 
-    def f(*res):
-        for v in lista:
-            if all(re.search(r, v["descripcion"], re.I) for r in res):
-                return v
+
+def buscar_series(lista):
+    def f(*opciones):
+        for res in opciones:
+            for v in lista:
+                if all(re.search(r, v.get("descripcion", ""), re.I) for r in res):
+                    return v
         return None
 
     def usd():
         for v in lista:
-            d = v["descripcion"]
+            d = v.get("descripcion", "")
             if (re.search("tasa", d, re.I) and re.search("(dep[oó]sitos|plazo fijo)", d, re.I)
                     and re.search(r"(d[oó]lares|u\$s)", d, re.I) and not re.search(r"pr[eé]stamo", d, re.I)):
                 return v
         return None
 
     return {
-        "a3500": f("A 3500", "referencia"),
-        "minorista_vendedor": f("B 9791", "vendedor"),
-        "badlar_tna": f(r"BADLAR", "privados", r"n\.a\."),
-        "badlar_tea": f(r"BADLAR", "privados", r"e\.a\."),
+        "a3500": f(["3500", "referencia"], ["3500"]),
+        "minorista_vendedor": f(["9791", "vendedor"], ["minorista", "vendedor"]),
+        "badlar_tna": f(["badlar", "privados", r"n\.a\."], ["badlar", r"n\.a\."], ["badlar", "nominal"]),
+        "badlar_tea": f(["badlar", "privados", r"e\.a\."], ["badlar", r"e\.a\."], ["badlar", "efectiva"]),
         "usd": usd(),
     }
+
+
+def diagnostico(lista):
+    print(f"Total de series que devolvió el BCRA: {len(lista)}", file=sys.stderr)
+    for v in lista[:5]:
+        print("  ejemplo:", v.get("idVariable"), v.get("descripcion"), file=sys.stderr)
+    n = 0
+    for v in lista:
+        if re.search(r"3500|badlar|cambio", v.get("descripcion", ""), re.I):
+            print("  candidata:", v.get("idVariable"), v.get("descripcion"), file=sys.stderr)
+            n += 1
+            if n >= 40:
+                break
 
 
 def limpiar(s):
@@ -107,15 +134,18 @@ def main():
     desde = a.desde or str(HOY - timedelta(days=(10 if datos else 3 * 365)))
     hasta = str(HOY)
 
-    S = buscar_series()
+    lista = listar()
+    S = buscar_series(lista)
     faltan = [k for k in ("a3500", "badlar_tea") if not S[k]]
     if faltan:
+        diagnostico(lista)
         sys.exit(f"No encontré en el BCRA las series: {faltan}")
 
     for clave, v in S.items():
         if not v:
             print(f"Aviso: no encontré la serie '{clave}'", file=sys.stderr)
             continue
+        print(f"Serie {clave}: {v['idVariable']} - {v['descripcion']}")
         try:
             for fecha, valor in serie(v["idVariable"], desde, hasta):
                 if clave == "usd":
